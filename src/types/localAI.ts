@@ -1,6 +1,6 @@
 /**
  * Type definitions for Local AI Stack
- * (Ollama + Whisper + Piper)
+ * (Ollama + Whisper + TTS)
  */
 
 // ============================================
@@ -93,9 +93,11 @@ export interface OllamaModelInfo {
 }
 
 // ============================================
-// Piper Types (Text-to-Speech)
+// TTS Types (Text-to-Speech) - Legacy for backwards compatibility
 // ============================================
 
+// Note: Piper types kept for legacy support only
+// New code should use TtsService from ttsService.ts
 export interface PiperSynthesisRequest {
   text: string;
   voice?: string;
@@ -129,6 +131,8 @@ export interface LocalAISession {
   settings: LocalAISettings;
   status: 'idle' | 'listening' | 'processing' | 'speaking' | 'error';
   lastActivity: Date;
+  onMessage?: (data: AIResponseMessage) => void;
+  onError?: (error: Error) => void;
 }
 
 export interface LocalAISettings {
@@ -218,9 +222,8 @@ export interface LocalAIHealthCheck {
 export interface LocalAIConfig {
   ollamaUrl: string;
   whisperUrl: string;
-  piperUrl: string;
+  ttsEngine: string;
   defaultModel: string;
-  defaultVoice: string;
   maxConversationLength: number;
   audioBufferTimeout: number;
   healthCheckInterval: number;

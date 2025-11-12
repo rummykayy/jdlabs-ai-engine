@@ -143,7 +143,7 @@ export class OllamaClient {
 
         // Process complete lines
         for (let i = 0; i < lines.length - 1; i++) {
-          const line = lines[i].trim();
+          const line = lines[i]?.trim();
           if (line) {
             try {
               const data: OllamaStreamChunk = JSON.parse(line);
@@ -159,7 +159,7 @@ export class OllamaClient {
         }
 
         // Keep incomplete line in buffer
-        buffer = lines[lines.length - 1];
+        buffer = lines[lines.length - 1] ?? '';
       }
 
       // Process any remaining data
@@ -302,7 +302,7 @@ export class OllamaClient {
         const lines = buffer.split('\n');
 
         for (let i = 0; i < lines.length - 1; i++) {
-          const line = lines[i].trim();
+          const line = lines[i]?.trim();
           if (line && onProgress) {
             try {
               const data: any = JSON.parse(line);
@@ -316,7 +316,7 @@ export class OllamaClient {
           }
         }
 
-        buffer = lines[lines.length - 1];
+        buffer = lines[lines.length - 1] ?? '';
       }
     } catch (error) {
       throw new OllamaError(`Failed to pull model: ${getErrorMessage(error)}`, 'PULL_MODEL_ERROR');

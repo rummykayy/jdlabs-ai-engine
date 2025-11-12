@@ -1,5 +1,4 @@
-import { GoogleGenAI, Chat, Type } from '@google/genai';
-import { GoogleGenerativeAI } from '@google/generative-ai';
+import { Chat, Type } from '@google/genai';
 import type { InterviewSettings, AiChatSession, InterviewQuestion, InterviewAnswer, FeedbackData } from '../types/shared/types.js';
 import { createGenAI, createGenerativeAI } from './aiConfig.js';
 

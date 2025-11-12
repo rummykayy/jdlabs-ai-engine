@@ -32,7 +32,7 @@ export const API_CONFIG = {
 // Factory function for GoogleGenAI instances
 export const createGenAI = () => {
     // Custom WebSocket URL handler
-    const createWebSocketUrl = (path: string) => {
+    const createWebSocketUrl = (_path: string) => {
         const url = new URL('wss://generativelanguage.googleapis.com/v1/live:connect');
         url.searchParams.set('model', 'gemini-2.5-flash-native-audio-latest');
         url.searchParams.set('origin', encodeURIComponent(ORIGIN));
@@ -84,7 +84,7 @@ export const createGenerativeAI = () => {
     // @ts-ignore - Custom configuration
     const genAI = new GoogleGenerativeAI(apiKey, {
         webSocket: {
-            create: (url: string) => {
+            create: (_url: string) => {
                 const wsUrl = new URL('wss://generativelanguage.googleapis.com/v1/live:connect');
                 wsUrl.searchParams.set('model', 'gemini-2.5-flash-native-audio-latest');
                 wsUrl.searchParams.set('origin', encodeURIComponent(ORIGIN));

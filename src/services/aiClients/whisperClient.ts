@@ -14,21 +14,18 @@ import {
   getErrorMessage,
   isFetchError,
   isTimeoutError,
-  isErrorWithCode,
 } from '../../utils/errorHelpers.js';
 
 export class WhisperClient {
   private baseUrl: string;
-  private model: string;
   private language: string;
 
   constructor(
     baseUrl: string = process.env.WHISPER_URL || 'http://localhost:9000',
-    model: string = process.env.WHISPER_MODEL || 'base.en',
+    _model: string = process.env.WHISPER_MODEL || 'base.en',
     language: string = process.env.WHISPER_LANGUAGE || 'en'
   ) {
     this.baseUrl = baseUrl.replace(/\/$/, ''); // Remove trailing slash
-    this.model = model;
     this.language = language;
   }
 

@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm run build:*)",
+      "Bash(npm install:*)",
+      "Bash(npx tsc)",
+      "Bash(docker exec:*)",
+      "Bash(findstr:*)",
+      "Bash(docker ps:*)",
+      "Bash(dir \"c:\\Users\\karthik\\Downloads\\JDLabs\\jdlabs-ai-engine\\dist\")"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

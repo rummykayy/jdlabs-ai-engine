@@ -24,8 +24,6 @@ function formatError(err: unknown) {
     return errorInfo;
 }
 
-const GEMINI_LIVE_MODEL = 'gemini-2.5-flash-native-audio-latest';
-
 // Official Gemini Live WebSocket URL - DO NOT MODIFY
 const GEMINI_WS_BASE_URL = 'wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent';
 

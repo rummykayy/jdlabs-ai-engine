@@ -1,21 +1,17 @@
 import WebSocket, { WebSocketServer, Data } from 'ws';
 import { Server } from 'http';
-import { GeminiService } from './geminiService.js';
-import { validateAudioChunk, transcodeWithFFmpeg } from './audioUtils.js';
+import { validateAudioChunk } from './audioUtils.js';
 import { validateToken, parseAuthHeader } from './authService.js';
-import { createAIManager, validateAIBackendConfig, getBackendInfo } from './aiServiceFactory.js';
+import { createAIManager, validateAIBackendConfig, getBackendInfo, isLocalAI } from './aiServiceFactory.js';
 import { AIManager } from '../types/localAI.js';
 import {
-    GeminiLiveWebSocket,
-    WSClientMessage,
-    WSServerResponse,
-    GeminiLiveMessage
+    WSClientMessage
 } from '../types/websocket.js';
 
 // Constants for rate limiting
 const RATE_LIMIT = {
     MAX_TEXT_REQUESTS: 30,    // Maximum text/control requests per window
-    MAX_AUDIO_CHUNKS: 200,    // Maximum audio chunks per window (allow ~3 chunks/sec)
+    MAX_AUDIO_CHUNKS: 500,    // Maximum audio chunks per window (allow ~8 chunks/sec for continuous audio)
     WINDOW_MS: 60000,         // 1 minute window
     MAX_CHUNK_SIZE: 5 * 1024 * 1024 // 5MB
 };
@@ -44,40 +40,53 @@ interface ErrorInfo {
     recoverable: boolean;
 }
 
-const ERROR_TYPES: Record<string, ErrorInfo> = {
-    MODEL_NOT_FOUND: {
-        message: 'The specified Gemini Live model is not available. Please check the model name.',
-        recoverable: true
-    },
-    UNAUTHORIZED: {
-        message: 'Invalid or expired OAuth token. Please refresh your authentication.',
-        recoverable: false
-    },
-    FORBIDDEN: {
-        message: 'Access denied. Please check your permissions and OAuth token scope.',
-        recoverable: false
-    },
-    CONNECTION_ERROR: {
-        message: 'Failed to connect to Gemini Live. Please try again.',
-        recoverable: true
-    },
-    RATE_LIMIT_EXCEEDED: {
-        message: 'Too many requests. Please wait before sending more.',
-        recoverable: true
-    },
-    INVALID_AUDIO: {
-        message: 'Invalid audio chunk format or size',
-        recoverable: true
-    },
-    MESSAGE_PROCESSING_ERROR: {
-        message: 'Failed to process message',
-        recoverable: true
-    }
-};
+// Dynamic error messages based on backend
+function getErrorTypes(): Record<string, ErrorInfo> {
+    const isLocal = isLocalAI();
+    const backendName = isLocal ? 'Local AI' : 'Gemini Live';
+    
+    return {
+        MODEL_NOT_FOUND: {
+            message: isLocal 
+                ? 'The specified AI model is not available. Please check the model name.'
+                : 'The specified Gemini Live model is not available. Please check the model name.',
+            recoverable: true
+        },
+        UNAUTHORIZED: {
+            message: 'Invalid or expired authentication token. Please refresh your authentication.',
+            recoverable: false
+        },
+        FORBIDDEN: {
+            message: 'Access denied. Please check your permissions and authentication.',
+            recoverable: false
+        },
+        CONNECTION_ERROR: {
+            message: `Failed to connect to ${backendName}. Please try again.`,
+            recoverable: true
+        },
+        SERVICE_UNAVAILABLE: {
+            message: isLocal
+                ? 'One or more Local AI services are unavailable. Please check service status.'
+                : 'AI service is temporarily unavailable. Please try again.',
+            recoverable: true
+        },
+        RATE_LIMIT_EXCEEDED: {
+            message: 'Too many requests. Please wait before sending more.',
+            recoverable: true
+        },
+        INVALID_AUDIO: {
+            message: 'Invalid audio chunk format or size',
+            recoverable: true
+        },
+        MESSAGE_PROCESSING_ERROR: {
+            message: 'Failed to process message',
+            recoverable: true
+        }
+    };
+}
 
 export class AISocketServer {
     private readonly wss: WebSocketServer;
-    private readonly gemini: GeminiService;
     private readonly aiManager: AIManager;
     private readonly activeSessions: Map<string, InterviewSession>;
     private readonly sessionLastActivity: Map<string, number>;
@@ -86,11 +95,10 @@ export class AISocketServer {
     constructor(server: Server) {
         // Validate AI backend configuration
         validateAIBackendConfig();
-        const backendInfo = getBackendInfo();
-        console.log('✅ AI Backend Configuration:', backendInfo);
+        const _backendInfo = getBackendInfo();
+        console.log('✅ AI Backend Configuration:', _backendInfo);
 
         // Initialize managers
-        this.gemini = new GeminiService();
         this.aiManager = createAIManager();
 
         // Initialize session tracking
@@ -139,13 +147,14 @@ export class AISocketServer {
     }
 
     private sendError(client: WebSocket, sessionId: string, code: string) {
-        const error = ERROR_TYPES[code] || ERROR_TYPES.MESSAGE_PROCESSING_ERROR;
+        const errorTypes = getErrorTypes();
+        const error = errorTypes[code] ?? errorTypes.MESSAGE_PROCESSING_ERROR;
         client.send(JSON.stringify({
             type: 'error',
             sessionId,
             code,
-            message: error.message,
-            recoverable: error.recoverable
+            message: error?.message ?? 'Unknown error',
+            recoverable: error?.recoverable ?? true
         }));
     }
 
@@ -234,6 +243,22 @@ Start by briefly introducing yourself as the AI interviewer and ask your first $
             }
 
             const session = this.activeSessions.get(sessionId);
+
+            // Special handling for audio chunks - they might arrive before session is fully initialized
+            if (data.type === 'audio-chunk') {
+                if (!session) {
+                    console.warn(`⚠️ [${sessionId}] Audio chunk received before session initialized - ignoring`);
+                    return;
+                }
+                // Only log every 10th chunk to reduce noise
+                if (!data.seq || data.seq % 10 === 0) {
+                    console.log(`🎤 [${sessionId}] Processing audio chunk #${data.seq || '?'}`);
+                }
+                await this.handleAudioChunk(sessionId, session, data);
+                return;
+            }
+
+            // For other message types, session must exist
             if (!session) {
                 throw new Error('Session not found');
             }
@@ -245,9 +270,6 @@ Start by briefly introducing yourself as the AI interviewer and ask your first $
                 case 'text':
                     await this.handleTextMessage(sessionId, session, data);
                     break;
-                case 'audio-chunk':
-                    await this.handleAudioChunk(sessionId, session, data);
-                    break;
                 default:
                     throw new Error(`Unknown message type: ${data.type}`);
             }
@@ -255,6 +277,48 @@ Start by briefly introducing yourself as the AI interviewer and ask your first $
             console.error('Error processing message:', error);
             this.sendError(client, sessionId, 'MESSAGE_PROCESSING_ERROR');
         }
+    }
+
+    private async initializeAISession(sessionId: string, session: InterviewSession): Promise<void> {
+        if (!session.settings) {
+            throw new Error('Cannot initialize AI session without settings');
+        }
+
+        const settings = session.settings;
+        const systemPrompt = this.buildSystemPrompt(settings);
+
+        // Connect to AI manager with proper settings
+        await this.aiManager.connect(
+            sessionId,
+            {
+                model: settings.model,
+                voiceName: settings.voicePreference || 'Puck',
+                responseModalities: session.needsAudio ? ['AUDIO'] : ['TEXT'],
+                // For LocalAI, pass the full settings object
+                mode: settings.mode,
+                difficulty: settings.difficulty,
+                position: settings.position,
+                jobDescription: settings.jobDescription,
+                voicePreference: settings.voicePreference
+            },
+            msg => this.handleGeminiLiveMessage(sessionId, session.client, msg),
+                error => {
+                    let code = 'CONNECTION_ERROR';
+                    if (error.message.includes('404') || error.message.includes('MODEL_NOT_FOUND')) {
+                        code = 'MODEL_NOT_FOUND';
+                    } else if (error.message.includes('401') || error.message.includes('UNAUTHORIZED')) {
+                        code = 'UNAUTHORIZED';
+                    } else if (error.message.includes('403') || error.message.includes('FORBIDDEN')) {
+                        code = 'FORBIDDEN';
+                    } else if (error.message.includes('SERVICE_UNAVAILABLE') || (error as any).code === 'SERVICE_UNAVAILABLE') {
+                        code = 'SERVICE_UNAVAILABLE';
+                    }
+                    this.sendError(session.client, sessionId, code);
+                }
+        );
+
+        // Send initial system prompt using the correct API format
+        await this.aiManager.sendText(sessionId, systemPrompt);
     }
 
     private async handleStartInterview(sessionId: string, session: InterviewSession, settings: InterviewSettings) {
@@ -272,28 +336,8 @@ Start by briefly introducing yourself as the AI interviewer and ask your first $
         session.needsAudio = settings.mode !== 'Chat Interview';
         session.settings = settings;
 
-        const systemPrompt = this.buildSystemPrompt(settings);
-
         try {
-            // Connect to Gemini Live with proper settings
-            await this.aiManager.connect(
-                sessionId,
-                {
-                    model: settings.model,
-                    voiceName: settings.voicePreference || 'Puck',
-                    responseModalities: session.needsAudio ? ['AUDIO'] : ['TEXT']
-                },
-                msg => this.handleGeminiLiveMessage(sessionId, session.client, msg),
-                error => {
-                    const code = error.message.includes('404') ? 'MODEL_NOT_FOUND' :
-                        error.message.includes('401') ? 'UNAUTHORIZED' :
-                            error.message.includes('403') ? 'FORBIDDEN' : 'CONNECTION_ERROR';
-                    this.sendError(session.client, sessionId, code);
-                }
-            );
-
-            // Send initial system prompt using the correct API format
-            await this.aiManager.sendText(sessionId, systemPrompt);
+            await this.initializeAISession(sessionId, session);
 
             // Notify client that interview is ready
             session.client.send(JSON.stringify({
@@ -302,12 +346,19 @@ Start by briefly introducing yourself as the AI interviewer and ask your first $
                 message: 'Interview session initialized successfully'
             }));
         } catch (error) {
-            console.error('Failed to initialize Gemini Live session:', error);
-            this.sendError(session.client, sessionId, 'CONNECTION_ERROR');
+            console.error(`❌ [${sessionId}] Failed to initialize AI session:`, error);
+            // Check for specific error codes
+            let code = 'CONNECTION_ERROR';
+            if ((error as any)?.code === 'SERVICE_UNAVAILABLE') {
+                code = 'SERVICE_UNAVAILABLE';
+            }
+            this.sendError(session.client, sessionId, code);
         }
     }
 
-    private async handleCompleteTurn(sessionId: string, session: InterviewSession) {
+    // Private method kept for potential future use
+    // @ts-ignore
+    private async _handleCompleteTurn(sessionId: string, session: InterviewSession) {
         console.log('✋ Completing turn for session:', sessionId);
         try {
             await this.aiManager.completeTurn(sessionId);
@@ -340,12 +391,10 @@ Start by briefly introducing yourself as the AI interviewer and ask your first $
             return;
         }
 
-        console.log('🎤 Processing audio chunk:', {
-            sessionId,
-            seq: data.seq,
-            encoding: data.encoding,
-            sampleRate: data.sampleRate
-        });
+        // Reduced logging - only log first chunk and every 20th chunk
+        if (!data.seq || data.seq === 1 || (data.seq % 20 === 0)) {
+            console.log(`🎤 [${sessionId}] Audio chunk #${data.seq || '?'} (${data.encoding}, ${data.sampleRate}Hz)`);
+        }
 
         if (!validateAudioChunk({
             data: typeof data.data === 'string' ? data.data : '',
@@ -355,6 +404,25 @@ Start by briefly introducing yourself as the AI interviewer and ask your first $
         })) {
             this.sendError(session.client, sessionId, 'INVALID_AUDIO');
             return;
+        }
+
+        // Check if AI manager session exists
+        const aiStatus = this.aiManager.getStatus(sessionId);
+        if (aiStatus === 'disconnected') {
+            // If we have settings, try to auto-initialize the session
+            if (session.settings) {
+                console.log(`⚠️ [${sessionId}] AI manager session not found, auto-initializing with existing settings...`);
+                try {
+                    await this.initializeAISession(sessionId, session);
+                } catch (error) {
+                    console.error(`❌ [${sessionId}] Failed to auto-initialize AI session:`, error);
+                    console.warn(`⚠️ [${sessionId}] Audio chunk ignored - session not initialized. Please send 'start_interview' first.`);
+                    return;
+                }
+            } else {
+                console.warn(`⚠️ [${sessionId}] Audio chunk received but AI manager session not initialized. Please send 'start_interview' first.`);
+                return;
+            }
         }
 
         try {
@@ -370,9 +438,44 @@ Start by briefly introducing yourself as the AI interviewer and ask your first $
 
             await this.aiManager.sendAudio(sessionId, audioBuffer, encoding, turnComplete);
 
-            console.log(`✅ [${sessionId}] Forwarded ${encoding} audio chunk to AI (${audioBuffer.length} bytes)`);
+            // Only log success for first chunk and every 50th chunk
+            if (!data.seq || data.seq === 1 || (data.seq % 50 === 0)) {
+                console.log(`✅ [${sessionId}] Forwarded audio chunk #${data.seq || '?'} (${audioBuffer.length} bytes)`);
+            }
         } catch (error) {
             console.error('Failed to process audio:', error);
+            // Check if it's a SESSION_NOT_FOUND error (check both message and code)
+            const isSessionNotFound = error instanceof Error && (
+                error.message.includes('SESSION_NOT_FOUND') ||
+                (error as any).code === 'SESSION_NOT_FOUND'
+            );
+            
+            if (isSessionNotFound) {
+                console.warn(`⚠️ [${sessionId}] Session not found in AI manager. Attempting to reinitialize...`);
+                // Try to reinitialize if we have settings
+                if (session.settings) {
+                    try {
+                        await this.initializeAISession(sessionId, session);
+                        // Retry sending the audio chunk
+                        const audioBuffer = typeof data.data === 'string'
+                            ? Buffer.from(data.data, 'base64')
+                            : Buffer.from(data.data as ArrayBuffer);
+                        const encoding = data.encoding || 'webm';
+                        const turnComplete = data.turnComplete !== undefined ? data.turnComplete : false;
+                        await this.aiManager.sendAudio(sessionId, audioBuffer, encoding, turnComplete);
+                        console.log(`✅ [${sessionId}] Successfully forwarded audio chunk after reinitialization`);
+                        return;
+                    } catch (retryError) {
+                        console.error(`❌ [${sessionId}] Failed to reinitialize session:`, retryError);
+                        this.sendError(session.client, sessionId, 'CONNECTION_ERROR');
+                        return;
+                    }
+                } else {
+                    console.warn(`⚠️ [${sessionId}] Cannot reinitialize - no settings available. Please send 'start_interview' first.`);
+                    this.sendError(session.client, sessionId, 'MESSAGE_PROCESSING_ERROR');
+                    return;
+                }
+            }
             this.sendError(session.client, sessionId, 'MESSAGE_PROCESSING_ERROR');
         }
     }

@@ -37,7 +37,7 @@ app.use((req, res, next) => {
 });
 
 // Health check endpoint
-app.get('/health', (req, res) => {
+app.get('/health', (_req, res) => {
   res.json({ status: 'ok' });
 });
 
@@ -50,7 +50,7 @@ if (process.env.NODE_ENV === 'production') {
 const server = createServer(app);
 
 // Initialize WebSocket server for AI interview sessions
-const aiSocketServer = new AISocketServer(server);
+new AISocketServer(server);
 
 server.listen(port, () => {
   console.log(`🚀 Server running on port ${port}`);

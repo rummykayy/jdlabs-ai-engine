@@ -4,7 +4,6 @@
  * Allows easy switching between Gemini Live API and Local AI stack
  */
 
-import { AIManager } from '../types/localAI.js';
 import { GeminiLiveManager } from './geminiLiveManager.js';
 import { LocalAiManager } from './localAiManager.js';
 
@@ -21,7 +20,7 @@ export function createAIManager(): any {
 
   switch (backend) {
     case 'local':
-      console.log('✅ Using Local AI Stack (Ollama + Whisper + Piper)');
+      console.log('✅ Using Local AI Stack (Ollama + Whisper + TTS)');
       return LocalAiManager.getInstance();
 
     case 'gemini':
@@ -66,18 +65,19 @@ export function validateAIBackendConfig(): void {
     // Check local AI service URLs
     const ollamaUrl = process.env.OLLAMA_URL;
     const whisperUrl = process.env.WHISPER_URL;
-    const piperUrl = process.env.PIPER_URL;
+    const ttsEngine = process.env.TTS_ENGINE || 'kani';
+    const ttsUrl = ttsEngine === 'kani' ? process.env.KANI_TTS_URL : process.env.PIPER_URL;
 
-    if (!ollamaUrl || !whisperUrl || !piperUrl) {
+    if (!ollamaUrl || !whisperUrl || !ttsUrl) {
       throw new Error(
-        'Local AI backend requires OLLAMA_URL, WHISPER_URL, and PIPER_URL environment variables'
+        `Local AI backend requires OLLAMA_URL, WHISPER_URL, and ${ttsEngine === 'kani' ? 'KANI_TTS_URL' : 'PIPER_URL'} environment variables`
       );
     }
 
     console.log('✅ Local AI backend configuration valid');
     console.log(`   - Ollama: ${ollamaUrl}`);
     console.log(`   - Whisper: ${whisperUrl}`);
-    console.log(`   - Piper: ${piperUrl}`);
+    console.log(`   - TTS (${ttsEngine}): ${ttsUrl}`);
   } else if (backend === 'gemini') {
     // Check Gemini API key
     const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;

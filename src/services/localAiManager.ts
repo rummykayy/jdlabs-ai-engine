@@ -1,6 +1,6 @@
 /**
  * Local AI Manager
- * Orchestrates Whisper (STT) + Ollama (LLM) + Piper (TTS) pipeline
+ * Orchestrates Whisper (STT) + Ollama (LLM) + TTS (Kani-TTS) pipeline
  * Implements the same interface as GeminiLiveManager for easy swapping
  */
 
@@ -15,14 +15,14 @@ import {
 } from '../types/localAI.js';
 import { WhisperClient, getWhisperClient } from './aiClients/whisperClient.js';
 import { OllamaClient, getOllamaClient } from './aiClients/ollamaClient.js';
-import { PiperClient, getPiperClient } from './aiClients/piperClient.js';
+import { TtsService, getTtsService } from './ttsService.js';
 
 export class LocalAiManager implements AIManager {
   private static instance: LocalAiManager | null = null;
 
   private whisper: WhisperClient;
   private ollama: OllamaClient;
-  private piper: PiperClient;
+  private tts: TtsService;
 
   private sessions: Map<string, LocalAISession>;
   private config: LocalAIConfig;
@@ -31,7 +31,7 @@ export class LocalAiManager implements AIManager {
   private constructor() {
     this.whisper = getWhisperClient();
     this.ollama = getOllamaClient();
-    this.piper = getPiperClient();
+    this.tts = getTtsService();
 
     this.sessions = new Map();
     this.audioBufferTimeouts = new Map();
@@ -39,9 +39,8 @@ export class LocalAiManager implements AIManager {
     this.config = {
       ollamaUrl: process.env.OLLAMA_URL || 'http://localhost:11434',
       whisperUrl: process.env.WHISPER_URL || 'http://localhost:9000',
-      piperUrl: process.env.PIPER_URL || 'http://localhost:10200',
+      ttsEngine: process.env.TTS_ENGINE || 'kani',
       defaultModel: process.env.OLLAMA_MODEL || 'gemma2:2b-instruct-q4',
-      defaultVoice: process.env.PIPER_VOICE || 'en_US-lessac-medium',
       maxConversationLength: 20, // Keep last 20 messages
       audioBufferTimeout: 1500, // 1.5 seconds of silence before processing
       healthCheckInterval: 60000, // Check service health every minute
@@ -82,7 +81,7 @@ export class LocalAiManager implements AIManager {
       // Extract settings
       const localSettings: LocalAISettings = {
         model: settings.model || this.config.defaultModel,
-        voice: settings.voicePreference || this.config.defaultVoice,
+        voice: settings.voicePreference || 'default',
         temperature: 0.7,
         maxTokens: 2048,
         systemPrompt: this.buildSystemPrompt(settings),
@@ -107,6 +106,8 @@ export class LocalAiManager implements AIManager {
         settings: localSettings,
         status: 'idle',
         lastActivity: new Date(),
+        onMessage,
+        onError,
       };
 
       this.sessions.set(sessionId, session);
@@ -132,7 +133,7 @@ export class LocalAiManager implements AIManager {
   async sendAudio(
     sessionId: string,
     audioBuffer: Buffer,
-    encoding: string,
+    _encoding: string,
     turnComplete: boolean
   ): Promise<void> {
     const session = this.sessions.get(sessionId);
@@ -147,9 +148,12 @@ export class LocalAiManager implements AIManager {
       // Buffer audio chunk
       session.audioBuffer.push(audioBuffer);
 
-      console.log(
-        `[LocalAI] ${sessionId} - Buffered audio chunk (${audioBuffer.length} bytes), total: ${session.audioBuffer.length} chunks`
-      );
+      // Reduced logging - only log every 20th chunk
+      if (session.audioBuffer.length === 1 || session.audioBuffer.length % 20 === 0) {
+        console.log(
+          `[LocalAI] ${sessionId} - Buffered ${session.audioBuffer.length} audio chunks (latest: ${audioBuffer.length} bytes)`
+        );
+      }
 
       // If turn complete, process immediately
       if (turnComplete) {
@@ -203,16 +207,18 @@ export class LocalAiManager implements AIManager {
       // Trim conversation history if too long
       this.trimConversationHistory(session);
 
-      // Synthesize response to audio
+      // Synthesize response to audio using TTS service
       session.status = 'speaking';
-      const audioResponse = await this.piper.synthesizeWithRetry(
-        assistantMessage,
-        { voice: session.settings.voice }
-      );
+      const audioResponse = await this.tts.synthesize(assistantMessage);
 
       // Convert to base64 for WebSocket transmission
-      const base64Audio = this.piper.toBase64(audioResponse.audio);
-      const audioFormat = this.piper.getAudioFormat();
+      const base64Audio = audioResponse.audio.toString('base64');
+      const audioFormat = {
+        encoding: 'base64',
+        sampleRate: audioResponse.sample_rate,
+        channels: 1,
+        mimeType: 'audio/wav',
+      };
 
       // Send response (this callback is passed from aiSocketServer)
       const onMessage = this.getSessionCallback(sessionId);
@@ -387,7 +393,7 @@ Begin the interview with a brief introduction and your first question.`;
 
     if (session.conversationHistory.length > maxLength) {
       // Keep system prompt (first message) and most recent messages
-      const systemPrompt = session.conversationHistory[0];
+      const systemPrompt = session.conversationHistory[0] ?? { role: 'system' as const, content: 'You are a helpful AI assistant.' };
       const recentMessages = session.conversationHistory.slice(-(maxLength - 1));
 
       session.conversationHistory = [systemPrompt, ...recentMessages];
@@ -400,9 +406,8 @@ Begin the interview with a brief introduction and your first question.`;
    * Get session callback (stored when session is created)
    */
   private getSessionCallback(sessionId: string): ((data: AIResponseMessage) => void) | null {
-    // This should be stored during connect(), but for now we'll use a workaround
-    // In production, store onMessage callback in LocalAISession
-    return null; // Callback will be handled by aiSocketServer
+    const session = this.sessions.get(sessionId);
+    return session?.onMessage || null;
   }
 
   /**
@@ -412,19 +417,23 @@ Begin the interview with a brief introduction and your first question.`;
     const checks = await Promise.allSettled([
       this.ollama.healthCheck(),
       this.whisper.healthCheck(),
-      this.piper.healthCheck(),
+      this.tts.healthCheck(),
     ]);
 
     const services = [
       { name: 'ollama', healthy: checks[0].status === 'fulfilled' && checks[0].value },
       { name: 'whisper', healthy: checks[1].status === 'fulfilled' && checks[1].value },
-      { name: 'piper', healthy: checks[2].status === 'fulfilled' && checks[2].value },
+      { name: 'tts', healthy: checks[2].status === 'fulfilled' && checks[2].value },
     ];
 
     const overall = services.every((s) => s.healthy);
 
     if (!overall) {
-      console.warn('⚠️  [LocalAI] Service health check failed:', services);
+      const unhealthyServices = services.filter(s => !s.healthy).map(s => s.name);
+      console.warn(`⚠️  [LocalAI] Service health check failed. Unhealthy services: ${unhealthyServices.join(', ')}`);
+      console.warn(`   Details:`, services);
+    } else {
+      console.log('✅ [LocalAI] All services healthy');
     }
 
     return { overall, services };

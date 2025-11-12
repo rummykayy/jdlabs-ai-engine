@@ -1,22 +1,6 @@
 import WebSocket from 'ws';
 
 // Gemini Multimodal Live API message types
-interface GeminiSetupMessage {
-    setup: {
-        model: string;
-        generation_config?: {
-            response_modalities?: string[];
-            speech_config?: {
-                voice_config?: {
-                    prebuilt_voice_config?: {
-                        voice_name?: string;
-                    }
-                }
-            }
-        }
-    }
-}
-
 interface GeminiClientContent {
     client_content: {
         turns: Array<{

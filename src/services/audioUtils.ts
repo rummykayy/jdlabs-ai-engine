@@ -36,7 +36,6 @@ export interface AudioValidationOptions {
 export function validateAudioChunk(chunk: AudioChunkValidation, options: AudioValidationOptions = {}): boolean {
     const {
         maxSizeBytes = 5 * 1024 * 1024, // 5MB default
-        requiredFormat,
         minSampleRate = 8000,
         maxChannels = 2
     } = options;
@@ -220,8 +219,8 @@ export async function convertWebMToWav(
 }
 
 /**
- * Convert Piper raw PCM to frontend-compatible PCM format
- * @param pcmBuffer Raw PCM buffer from Piper
+ * Convert TTS raw PCM to frontend-compatible PCM format
+ * @param pcmBuffer Raw PCM buffer from TTS engine
  * @param sourceSampleRate Source sample rate (default: 22050)
  * @param targetSampleRate Target sample rate (default: 24000)
  * @returns Converted PCM buffer

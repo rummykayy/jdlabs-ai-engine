@@ -1,5 +1,4 @@
 import { GoogleGenerativeAI } from '@google/generative-ai';
-import { v4 as uuidv4 } from 'uuid';
 
 interface GeminiResponse {
     text: string;
@@ -27,9 +26,9 @@ export class GeminiService {
         this.audioModel = process.env.GEMINI_AUDIO_MODEL || 'gemini-2.5-flash-preview-native-audio';
     }
 
-    async sendTextToGemini(sessionId: string, text: string, voicePreference?: string): Promise<GeminiResponse> {
+    async sendTextToGemini(_sessionId: string, text: string, _voicePreference?: string): Promise<GeminiResponse> {
         try {
-            console.log(`📤 Sending text to Gemini (${sessionId}):`, text.substring(0, 100) + '...');
+            console.log(`📤 Sending text to Gemini (${_sessionId}):`, text.substring(0, 100) + '...');
 
             const model = this.genAI.getGenerativeModel({ model: this.model });
             const result = await model.generateContent(text);
@@ -38,17 +37,6 @@ export class GeminiService {
 
             if (!responseText) {
                 throw new Error('Empty response from Gemini');
-            }
-
-            // If voice response requested, generate audio
-            if (voicePreference) {
-                try {
-                    const audio = await this.generateSpeech(responseText, voicePreference);
-                    return { text: responseText, audio };
-                } catch (audioError) {
-                    console.warn('Audio generation failed, falling back to text:', audioError);
-                    return { text: responseText };
-                }
             }
 
             return { text: responseText };
@@ -66,9 +54,9 @@ export class GeminiService {
         }
     }
 
-    async sendAudioToGemini(sessionId: string, audio: Buffer, voicePreference?: string): Promise<GeminiResponse> {
+    async sendAudioToGemini(_sessionId: string, audio: Buffer, _voicePreference?: string): Promise<GeminiResponse> {
         try {
-            console.log(`🎤 Processing audio for Gemini (${sessionId})`);
+            console.log(`🎤 Processing audio for Gemini (${_sessionId})`);
 
             const audioModel = this.genAI.getGenerativeModel({ model: this.audioModel });
 
@@ -89,7 +77,7 @@ export class GeminiService {
                 throw new Error('Failed to transcribe audio');
             }
 
-            return this.sendTextToGemini(sessionId, transcription, voicePreference);
+            return this.sendTextToGemini(_sessionId, transcription, _voicePreference);
 
         } catch (error) {
             console.error('❌ Gemini audio processing error:', error);
@@ -104,8 +92,9 @@ export class GeminiService {
         }
     }
 
-    private async generateSpeech(text: string, voice: string): Promise<Buffer> {
-        // Placeholder for speech generation
+    // Placeholder for speech generation - kept for potential future use
+    // @ts-ignore
+    private async _generateSpeech(_text: string, _voice: string): Promise<Buffer> {
         // Implementation depends on which text-to-speech service you want to use
         throw new Error('Speech generation not implemented');
     }
